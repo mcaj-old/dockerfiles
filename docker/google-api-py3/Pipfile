@@ -8,8 +8,8 @@ verify_ssl = true
 [packages]
 google-api-python-client = "*"
 oauth2client = "*"
-cryptography = "*"
+cryptography = ">=50.0.2"
 cffi = "*"
 
 [requires]
-python_version = "3.7"
+python_version = "3.12"

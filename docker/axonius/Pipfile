@@ -6,8 +6,10 @@ verify_ssl = true
 [dev-packages]
 
 [packages]
-axonius-api-client = "==4.*"
-pyopenssl = "*"
+axonius-api-client = "==5.*"
+pyopenssl = ">=26.0.0"
+cryptography = ">=50.0.1"
+urllib3 = ">=2.8.0"
 
 [requires]
-python_version = "3.8"
+python_version = "3.12"

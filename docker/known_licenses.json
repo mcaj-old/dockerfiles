@@ -85,6 +85,10 @@
             "license": "License :: MIT License",
             "url": "https://github.com/jborean93/omi/blob/master/LICENSE"
         },
+        "PowerShellGet":{
+            "license": "License :: MIT License",
+            "url": "https://go.microsoft.com/fwlink/?LinkId=829061"
+        },
         "msal-extensions": {
             "license": "License :: MIT License",
             "url": "https://github.com/AzureAD/microsoft-authentication-library-for-python/blob/dev/LICENSE"
@@ -98,10 +102,6 @@
             "url": "https://github.com/vmware/vsphere-automation-sdk-python/blob/master/LICENSE"
         },
         "nsx-python-sdk": {
-            "license": "License :: MIT License",
-            "url": "https://github.com/vmware/vsphere-automation-sdk-python/blob/master/LICENSE"
-        },
-        "nsx-policy-python-sdk": {
             "license": "License :: MIT License",
             "url": "https://github.com/vmware/vsphere-automation-sdk-python/blob/master/LICENSE"
         },
@@ -121,14 +121,6 @@
             "license": "License :: MIT License",
             "url": "https://github.com/vmware/vsphere-automation-sdk-python/blob/master/LICENSE"
         },
-        "nsx-python-sdk": {
-            "license": "License :: MIT License",
-            "url": "https://github.com/vmware/vsphere-automation-sdk-python/blob/master/LICENSE"
-        },
-        "nsx-policy-python-sdk": {
-            "license": "License :: MIT License",
-            "url": "https://github.com/vmware/vsphere-automation-sdk-python/blob/master/LICENSE"
-        },
         "nsx-vmc-policy-python-sdk": {
             "license": "License :: MIT License",
             "url": "https://github.com/vmware/vsphere-automation-sdk-python/blob/master/LICENSE"
@@ -144,6 +136,30 @@
         "portalocker": {
             "license": "License :: PSF license",
             "url": "https://github.com/WoLpH/portalocker/blob/develop/LICENSE"
+        },
+        "aiohappyeyeballs" : {
+            "license": "License :: PSF-2.0 License",
+            "url": "https://github.com/aio-libs/aiohappyeyeballs/blob/main/LICENSE"
+        },
+        "attrs": {
+            "license": "License :: MIT License",
+            "url": "https://github.com/python-attrs/attrs/blob/main/LICENSE"
+        },
+        "ExifRead": {
+            "license": "License :: BSD 3-Clause License",
+            "url": "https://github.com/ianare/exif-py/blob/master/LICENSE"
+        },
+        "pikepdf": {
+            "license": "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+            "url": "https://github.com/pikepdf/pikepdf/blob/main/LICENSE.txt"
+        },
+        "google-crc32c": {
+            "license": "License :: BSD 3-Clause License",
+            "url": "https://github.com/google/crc32c/blob/main/LICENSE"
+        },
+        "resilient": {
+            "license": "License :: MIT License",
+            "url": "https://github.com/ibmresilient/resilient-python-api/blob/main/resilient/LICENSE"
         }
     }
 }

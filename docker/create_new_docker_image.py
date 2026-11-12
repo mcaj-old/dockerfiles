@@ -74,8 +74,7 @@ def create_python_image(folder, base_image, args):
 
 LINUX_DIST_TO_SUFFIX = {
     'alpine': '',
-    'debian': '-deb',
-    'ubuntu': '-ubuntu'
+    'debian': '-deb'
 }
 
 
@@ -92,8 +91,8 @@ def main():
                         choices=['python', 'powershell'], default='python')
     parser.add_argument("-p", "--python", help="Specify python version to use",
                         choices=['two', 'three'], default='three')
-    parser.add_argument("-l", "--linux", help="Specify linux distro to use",
-                        choices=['alpine', 'debian', 'ubuntu'], default='alpine')
+    parser.add_argument("-l", "--linux", help="Specify linux distribution to use",
+                        choices=['alpine', 'debian'], default='alpine')
     parser.add_argument('--pkg', action='append', help='Specify a package to install. Can be specified multiple times. ' +
                         'Each package needs to be specified with --pkg. For example: --pkg google-cloud-storage --pkg oath2client')
     parser.add_argument("name", type=kebab_case_type,
@@ -107,7 +106,7 @@ def main():
     base_image = "demisto/{}{}{}".format(args.type, version, linux)
 
     print(args)
-    print("docker dir: ".format(sys.path[0]))
+    print("docker dir: {}".format(sys.path[0]))
     print("Using base image: {}".format(base_image))
     folder = "{}/{}".format(sys.path[0], args.name)
     if os.path.exists(folder):

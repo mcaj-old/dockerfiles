@@ -8,6 +8,10 @@ verify_ssl = true
 [packages]
 requests = "*"
 jsonschema = "*"
+pytest = "*"
+pipenv = "*"
+poetry = "*"
+poetry-plugin-export = "*"
 
 [requires]
-python_version = "2.7"
+python_version = "3.12"

@@ -1,43 +1,77 @@
-FROM demisto/python3-deb:3.9.1.14969
+FROM demisto/python3-deb:3.12.11.4424127
 
-COPY requirements.txt .
-
-ENV NODE_VERSION 12.18.4
+ENV NODE_VERSION 14.16.0
 ENV NVM_DIR /root/.nvm
-ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
+ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:/root/.local/bin:$PATH
+ENV NEO4J_CONF_FILE /etc/neo4j/neo4j.conf
+ENV APOC_CONF_FILE /etc/neo4j/apoc.conf
 
 # Currently sh is linked to dash, linking it to /bin/bash instead.
-RUN rm /bin/sh && ln -s /bin/bash /bin/sh
+RUN rm /bin/sh && ln -s /bin/bash /bin/sh && cat ~/.profile >> /etc/.profile
 
-RUN apt-get update -y \
-    && apt-get install -y curl jq unzip openssh-client gcc libffi-dev libssl-dev git zip netcat wget python2 python-pip software-properties-common \
-    # Install requirements
-    && pip install --no-cache-dir -r requirements.txt \
-    # Installing nvm, npm and node.js
-    && curl https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash \
+RUN apt-get update
+RUN apt-get upgrade -y
+RUN apt-get update && apt-get install -y curl jq unzip openssh-client gcc libffi-dev libssl-dev git zip cowsay netcat-openbsd wget python3-pip software-properties-common
+# Upgrade Git to latest version from backports (already configured in base image)
+RUN apt-get update && apt-get install -y git && git --version
+
+RUN curl https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash \
     && . $NVM_DIR/nvm.sh \
     && nvm install $NODE_VERSION \
     && nvm alias default $NODE_VERSION \
-    && nvm use default \
-    # Installing the gsutil and docker cli
-    && apt-get install apt-transport-https ca-certificates gnupg=2.2.12-1+deb10u1 gpgv=2.2.12-1+deb10u1 -y --allow-downgrades\
+    && nvm use default
+
+# Installing the gsutil cli
+RUN apt-get install apt-transport-https ca-certificates gnupg gpgv -y --allow-downgrades\
     && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" |  tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
     && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add - \
-    && add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu bionic stable" \
-    && apt-get update &&  apt-get install google-cloud-sdk docker-ce-cli -y \
-    && gcloud --version \
-    && gsutil --version \
-    && docker --version \
-    # Installing goenv
-    && git clone https://github.com/syndbg/goenv.git ~/.goenv \
-    && echo 'export GOENV_ROOT="$HOME/.goenv"' >> ~/.bashrc \
-    && echo 'export PATH="$GOENV_ROOT/bin:$PATH"' >> ~/.bashrc \
+    && apt-get update && apt-get install google-cloud-cli -y && source ~/.bashrc && gsutil --version && gcloud --version
+
+# Installing the docker cli
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add - \
+    && add-apt-repository "deb https://download.docker.com/linux/ubuntu bionic stable" \
+    && apt-get update \
+    && apt-get install docker-ce-cli -y && source ~/.bashrc && docker --version
+RUN apt-get install kubectl -y && source ~/.bashrc && ! kubectl version --output yaml
+RUN apt-get install google-cloud-cli-gke-gcloud-auth-plugin -y && source ~/.bashrc
+
+# installations
+RUN apt-get install openjdk-17-jre -y && source ~/.bashrc && java -version
+RUN curl -sSL https://install.python-poetry.org | python3 - --version 1.8.2 && source ~/.bashrc && poetry --version
+
+# install neo4j
+ENV NEO4J_VERSION 5.26.30
+RUN echo "deb http://httpredir.debian.org/debian stable-backports main" | tee -a /etc/apt/sources.list.d/stable-backports.list \
+    && wget -O - https://debian.neo4j.com/neotechnology.gpg.key | apt-key add - \
+    && echo 'deb https://debian.neo4j.com stable 5' | tee -a /etc/apt/sources.list.d/neo4j.list \
+    && apt-get update
+RUN apt-get install neo4j="1:${NEO4J_VERSION}" -y && source ~/.bashrc && neo4j --version && neo4j-admin --version \
+    && installed_neo4j_version="$(neo4j-admin --version)" \
+    && echo "Installed Neo4j version: ${installed_neo4j_version}" \
+    && mkdir -p /var/lib/neo4j/plugins \
+    && wget -O "/var/lib/neo4j/plugins/apoc-${installed_neo4j_version}-core.jar" "https://github.com/neo4j/apoc/releases/download/${installed_neo4j_version}/apoc-${installed_neo4j_version}-core.jar" \
+    && neo4j_conf_file="/etc/neo4j/neo4j.conf" \
+    && echo "dbms.security.procedures.unrestricted=apoc.*" >> $NEO4J_CONF_FILE \
+    && echo "dbms.security.procedures.allowlist=apoc.*" >> $NEO4J_CONF_FILE \
+    && apoc_conf_file="/etc/neo4j/apoc.conf" \
+    && echo "apoc.export.file.enabled=true" > $APOC_CONF_FILE \
+    && echo "apoc.import.file.enabled=true" >> $APOC_CONF_FILE \
+    && echo "apoc.import.file.use_neo4j_config=true" >> $APOC_CONF_FILE
+# Installing goenv
+RUN git clone https://github.com/go-nv/goenv.git --depth 1 ~/.goenv
+RUN echo 'export GOENV_ROOT="$HOME/.goenv"' >> ~/.bashrc \
+    && echo 'export PATH="$GOENV_ROOT/bin:$PATH"' >> ~/.bashrc \ 
+    && source ~/.bashrc \
+    && goenv install 1.22.5 \
+    && goenv global 1.22.5 \
     && echo 'eval "$(goenv init -)"' >> ~/.bashrc \
     && echo 'export PATH="$GOROOT/bin:$PATH"' >> ~/.bashrc \
     && echo 'export PATH="$PATH:$GOPATH/bin"' >> ~/.bashrc \
-    && source ~/.bashrc \
-    && goenv install 1.13.8 \
-    && goenv global 1.13.8 \
-    && source ~/.bashrc \
-    && curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.40.1
+    && source ~/.bashrc
+RUN curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.60.3
+# Installing cosign
+ENV COSIGN_VERSION v3.0.2
+RUN curl -sSL -o /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+    && chmod +x /usr/local/bin/cosign \
+    && cosign version
+

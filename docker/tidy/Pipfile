@@ -18,8 +18,9 @@ pywinrm = "*"
 ansible = "*"
 cffi = "*"
 jinja2-ansible-filters = "*"
+setuptools = "84.2.1"
 
 [dev-packages]
 
 [requires]
-python_version = "3.9"
+python_version = "3.12"

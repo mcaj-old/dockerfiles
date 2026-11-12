@@ -1,8 +1,10 @@
+# Last modified: 2026-11-09T05:54:27.221724+00:00
 
-FROM demisto/python3-deb:3.9.6.24019
+FROM demisto/python3-deb:3.12.15.14089014
 
 COPY requirements.txt .
 
+# in order to install the "azure-keyvault" module we need pip==24.0, so install it and after that upgrade again
 RUN apt-get update && apt-get install -y --no-install-recommends \
   gcc \
   python3-dev \
@@ -10,10 +12,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libc6-dev \
   sshpass \
   openssh-client \
-&& pip install --no-cache-dir -r requirements.txt \
-&& apt-get purge -y --auto-remove \
+ && pip install pip==24.0 \
+ && pip install --no-cache-dir -r requirements.txt \
+ && pip install --upgrade pip \
+ && pip install https://github.com/vmware/vsphere-automation-sdk-python/archive/refs/tags/v7.0.3.2.tar.gz \
+ && pip install --upgrade azure-storage-blob \
+ && pip uninstall aiohttp -y \
+ && echo "Cache bust 987654321" \
+ && pip install "wheel>=0.38.1" \
+ && apt-get purge -y --auto-remove \
   gcc \
   python3-dev \
   linux-libc-dev \
   libc6-dev \
-&& rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*

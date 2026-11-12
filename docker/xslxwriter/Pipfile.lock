@@ -1,11 +1,11 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "83917596f12004fb0a8937ef9b63a219f46e515443e73b0d2248c66f1f713952"
+            "sha256": "ba076925d3e6be5bebe5ecddc0f345d7fa21200b14d6e8fb49aedec41c49ce9f"
         },
         "pipfile-spec": 6,
         "requires": {
-            "python_version": "3.8"
+            "python_version": "3.12"
         },
         "sources": [
             {
@@ -18,11 +18,12 @@
     "default": {
         "xlsxwriter": {
             "hashes": [
-                "sha256:0956747859567ec01907e561a7d8413de18a7aae36860f979f9da52b9d58bc19",
-                "sha256:f9335f1736e2c4fd80e940fe1b6d92d967bf454a1e5d639b0b7a4459ade790cc"
+                "sha256:0867761912cceac76f97ffa76eeda18c623ae9217f601be8512f55b1af4bdb6e",
+                "sha256:8e2c89e59d733fe59e112317218c64fbbc276d90a8c144ebd6f7fa15e7ab184a"
             ],
             "index": "pypi",
-            "version": "==1.4.5"
+            "markers": "python_version >= '3.8'",
+            "version": "==3.3.1"
         }
     },
     "develop": {}

@@ -1,10 +1,9 @@
+# Last modified: 2026-10-26T05:51:06.900244+00:00
 
-FROM demisto/python:2.7.18.24019
+FROM demisto/python3:3.12.15.14069087
 
 COPY requirements.txt .
 
-RUN apk --update add --no-cache libxml2 libxslt
-
-RUN apk --update add --no-cache --virtual .build-dependencies python2-dev build-base wget libxml2-dev libxslt-dev \
-  && pip install --no-cache-dir -r requirements.txt \
-  && apk del .build-dependencies
+# The lxml wheel statically links its own libxml2/libxslt, so the system
+# copies are not needed at runtime and only add an outdated parser to the image.
+RUN pip install --no-cache-dir -r requirements.txt

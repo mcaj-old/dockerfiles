@@ -1,8 +1,9 @@
+# Last modified: 2026-11-09T05:54:27.221724+00:00
 
-FROM demisto/python:2.7.18.24019
+FROM demisto/python3:3.12.15.14069087
 
 COPY requirements.txt .
 
-RUN apk --update add --no-cache --virtual .build-dependencies python2-dev build-base wget git  musl-dev openssl-dev libffi-dev  \
-  && pip install --no-cache-dir -r requirements.txt \
+RUN apk --update add --no-cache --virtual .build-dependencies python3-dev build-base wget git  musl-dev openssl-dev libffi-dev  \
+  && pip install --no-cache-dir --use-pep517 -r requirements.txt \
   && apk del .build-dependencies

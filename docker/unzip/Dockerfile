@@ -1,13 +1,23 @@
-
-FROM demisto/python3:3.9.6.22912
+# Last modified: 2026-10-28T06:16:02.383844+00:00
+FROM demisto/python3-deb:3.12.15.14089014
 
 COPY requirements.txt .
 
-RUN apk --update add --no-cache --virtual .build-dependencies python3-dev build-base wget git \
-  && pip install --no-cache-dir -r requirements.txt \
-  && apk del .build-dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  gcc \
+  python3-dev \
+&& pip install --no-cache-dir -r requirements.txt \
+&& apt-get purge -y --auto-remove \
+  gcc \
+  python3-dev \
+&& rm -rf /var/lib/apt/lists/*
 
-RUN apk --update add --no-cache p7zip
+# Installs p7zip-full for general archive extraction.
+RUN apt-get update && apt-get install -y --no-install-recommends p7zip-full \
+  && rm -rf /var/lib/apt/lists/*
 
-# installs unrar
-RUN apk --update add --no-cache unrar
+# Add a new sources list file that includes the contrib and non-free repositories
+RUN echo "deb http://deb.debian.org/debian trixie contrib non-free" >> /etc/apt/sources.list.d/contrib-nonfree.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends unrar \
+    && rm -rf /var/lib/apt/lists/*

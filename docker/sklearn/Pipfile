@@ -9,11 +9,10 @@ verify_ssl = true
 numpy = "*"
 scikit-learn = "*"
 pandas = "*"
-nltk = "*"
-eli5 = "*"
+nltk = ">=3.10.3"
 dill = "*"
 beautifulsoup4 = "*"
 networkx = "*"
 
 [requires]
-python_version = "3.7"
+python_version = "3.12"

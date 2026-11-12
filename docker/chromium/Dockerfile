@@ -1,14 +1,15 @@
-# Last modified: Sat, 30 Oct 2021 15:07:45 +0000
-FROM demisto/python3-deb:3.9.7.24076
+# Last modified: 2026-11-09T05:54:27.221724+00:00
+FROM demisto/python3-deb:3.12.15.14089014
 
 COPY requirements.txt .
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ARG POPPLER_VERSION=25.09.1
+
+RUN sed -i '/trixie-backports/d' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true \
+&& apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
   python3-dev \
   wget \
   libxss1 \
-  libappindicator1 \
-  poppler-utils \
   fonts-noto-cjk \
   fonts-noto-core \
   zlib1g-dev \
@@ -16,7 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 && apt-get purge -y --auto-remove \
   python3-dev \
   zlib1g-dev \
-&& rm -rf /var/lib/apt/lists/*
+&& rm -rf /var/lib/apt/lists/* \
+&& touch /var/chrome_headless.log \
+&& chmod 777 /var/chrome_headless.log \
+&& touch /var/chrome_instances.json \
+&& chmod 777 /var/chrome_instances.json
 
 # Based on instructions at: https://tecadmin.net/setup-selenium-with-chromedriver-on-debian/
 # Will install the latest version available from the chrome repo.
@@ -26,24 +31,51 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY download_chromedriver.sh .
 
 # Deps needed by google-chrome
-RUN apt-get update && apt-get -t buster-backports install -y --no-install-recommends \
-  gnupg1 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  jq \
+  gnupg2 \
   libgtk-3-0 \
-  libu2f-udev \
-  udev \
-&& apt-get update && apt-get install -y --no-install-recommends \
   curl \
   unzip \
-&& curl -sS -o - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-&& echo "deb [arch=amd64]  http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
+&& curl -sS https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+&& echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
 && apt-get -y update && apt-get install -y google-chrome-stable \
+&& apt-get install -y tigervnc-standalone-server x11-utils imagemagick \
 && ./download_chromedriver.sh \
-&& unzip chromedriver_linux64.zip \
-&& mv chromedriver /usr/bin/chromedriver \
-&& rm -rf chromedriver_linux64.zip \
+&& unzip chromedriver-linux64.zip \
+&& mv chromedriver-linux64/chromedriver /usr/bin/chromedriver \
+&& rm -rf chromedriver-linux64.zip \
+&& rm download_chromedriver.sh \
 && google-chrome --version \
-&& chromedriver --version \
-&& apt-get purge -y --auto-remove \
+&& chromedriver --version
+
+# Install latest Poppler
+RUN apt-get install -y libfreetype-dev libfontconfig-dev libboost-dev libpng-dev zlib1g-dev liblcms2-dev libcurl4 libcurl4-gnutls-dev \
+&& apt-get install -y libjpeg-dev libcairo-dev libopenjp2-7-dev libtiff-dev libnss3-dev \
+&& apt-get install -y build-essential \
+&& apt-get install -y libgpgmepp-dev qtbase5-dev libcairo2-dev \
+&& apt-get install -y xz-utils cmake git \ 
+&& wget https://poppler.freedesktop.org/poppler-${POPPLER_VERSION}.tar.xz -v \
+&& tar -xf ./poppler-${POPPLER_VERSION}.tar.xz \
+&& cd poppler-${POPPLER_VERSION} \
+&& mkdir -p build \
+&& cd build \
+&& git clone --branch poppler-${POPPLER_VERSION} --depth 1 https://gitlab.freedesktop.org/poppler/poppler.git \
+&& cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DTESTDATADIR=$PWD/testfiles -DENABLE_QT6=OFF -DENABLE_UNSTABLE_API_ABI_HEADERS=ON -DENABLE_GPGME=OFF poppler \
+&& make install \
+&& . ~/.bashrc \
+&& ldconfig "$(which pdftoppm)" \
+&& pdftoppm -v \
+&& cd ../.. \
+&& rm poppler-${POPPLER_VERSION}.tar.xz \
+&& rm -rf poppler-${POPPLER_VERSION}/
+
+RUN apt-get purge -y --auto-remove \
   curl \
+  git \
   unzip \
+  jq \
+  libarchive13 \
 && rm -rf /var/lib/apt/lists/*
+
+ENV CHROME_EXE="/opt/google/chrome/google-chrome"

@@ -1,15 +1,41 @@
-# Last modified: Sun, 29 Aug 2021 16:25:44 +0000
-FROM mcr.microsoft.com/powershell:7.1.4-ubuntu-20.04-20210819
+# Last modified: 2026-11-08T05:58:46.209600+00:00
+FROM mcr.microsoft.com/powershell:7.5-ubuntu-22.04
 
 # For the `no supported WSMan client library was found` error when using Ubuntu 20+
-RUN apt-get update -y
-RUN sh -c "yes | pwsh -Command 'Install-Module -Name PSWSMan'"
+RUN sh -c "yes | pwsh -Command 'Install-Module -Name PSWSMan -RequiredVersion 2.3.1'"
 RUN pwsh -Command 'Install-WSMan'
 
-RUN apt update && apt install netbase -y
-# Upgrade all packages to latest
-RUN apt-get update && apt-get -y --no-install-recommends upgrade \
-&& rm -rf /var/lib/apt/lists/*
+# Update, install gss-ntlmssp, upgrade packages, and clean up in a single layer
+RUN apt-get update -y && \
+    # install wget
+    apt-get install -y wget && \
+    # install gss-ntlmssp from debian repository
+    wget http://ftp.debian.org/debian/pool/main/g/gss-ntlmssp/gss-ntlmssp_1.2.0-1_amd64.deb && \
+    dpkg -i gss-ntlmssp_1.2.0-1_amd64.deb && \
+    # install any missing dependencies and other required packages
+    apt-get install -y --fix-broken netbase tzdata && \
+    # clean up the downloaded file
+    rm gss-ntlmssp_1.2.0-1_amd64.deb && \
+    # upgrade all packages to latest
+    apt-get -y --no-install-recommends upgrade && \
+    # clean up apt lists
+    rm -rf /var/lib/apt/lists/*
+
+# Upgrade System.Security.Cryptography.Xml and System.Security.Cryptography.Pkcs to 9.0.21 to address .NET security issues
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends unzip && \
+    wget -q https://api.nuget.org/v3-flatcontainer/system.security.cryptography.xml/9.0.21/system.security.cryptography.xml.9.0.21.nupkg -O /tmp/cryptoxml.nupkg && \
+    unzip -o /tmp/cryptoxml.nupkg "lib/net9.0/System.Security.Cryptography.Xml.dll" -d /tmp/cryptoxml && \
+    cp /tmp/cryptoxml/lib/net9.0/System.Security.Cryptography.Xml.dll /opt/microsoft/powershell/7/System.Security.Cryptography.Xml.dll && \
+    sed -i -E 's|System.Security.Cryptography.Xml/9\.0\.[0-9]+|System.Security.Cryptography.Xml/9.0.21|g' /opt/microsoft/powershell/7/pwsh.deps.json && \
+    wget -q https://api.nuget.org/v3-flatcontainer/system.security.cryptography.pkcs/9.0.21/system.security.cryptography.pkcs.9.0.21.nupkg -O /tmp/cryptopkcs.nupkg && \
+    unzip -o /tmp/cryptopkcs.nupkg "lib/net9.0/System.Security.Cryptography.Pkcs.dll" -d /tmp/cryptopkcs && \
+    cp /tmp/cryptopkcs/lib/net9.0/System.Security.Cryptography.Pkcs.dll /opt/microsoft/powershell/7/System.Security.Cryptography.Pkcs.dll && \
+    sed -i -E 's|System.Security.Cryptography.Pkcs/9\.0\.[0-9]+|System.Security.Cryptography.Pkcs/9.0.21|g' /opt/microsoft/powershell/7/pwsh.deps.json && \
+    rm -rf /tmp/cryptoxml /tmp/cryptoxml.nupkg /tmp/cryptopkcs /tmp/cryptopkcs.nupkg && \
+    apt-get purge -y unzip && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set timezone to Etc/UTC for backwards comp. See: https://github.com/regebro/tzlocal/issues/101
 RUN echo 'Etc/UTC' > /etc/timezone \

@@ -6,8 +6,10 @@ name = "pypi"
 [packages]
 xmltodict = "*"
 beautifulsoup4 = "*"
+markdown = "*"
+lxml = "*"
 
 [dev-packages]
 
 [requires]
-python_version = "3.9"
+python_version = "3.12"

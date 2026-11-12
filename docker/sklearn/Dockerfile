@@ -1,11 +1,12 @@
-FROM demisto/python3:3.8.6.12176
+# Last modified: 2026-10-28T06:16:02.383844+00:00
+FROM demisto/python3:3.12.15.14069087
 
 COPY requirements.txt .
 
 RUN apk --update add --no-cache --virtual .build-dependencies python3-dev build-base wget git g++ python3-dev\
         openssh curl ca-certificates openssl less htop \
 		make  rsync \
-        libpng-dev freetype-dev libexecinfo-dev lapack-dev \
+        libpng-dev freetype-dev lapack-dev \
         gfortran \
         musl-dev openblas-dev\
   && apk add --no-cache libstdc++  \
@@ -16,7 +17,26 @@ RUN apk --update add --no-cache --virtual .build-dependencies python3-dev build-
   && apk del .build-dependencies
 
 RUN mkdir /ml
-RUN python -c "import nltk; nltk.download('wordnet', download_dir='/ml/nltk_data'); nltk.download('stopwords', download_dir='/ml/nltk_data'); nltk.download('punkt', download_dir='/ml/nltk_data')"
+# nltk.download() returns False on failure instead of raising, so its result must be
+# checked: a transient CDN error must fail the build rather than ship empty corpora.
+RUN NLTK_MAX_ATTEMPTS=3; NLTK_RETRY_DELAY_SECONDS=5; \
+    for resource in wordnet stopwords punkt_tab; do \
+        attempt=1; \
+        until python -c "import sys, nltk; sys.exit(0 if nltk.download('$resource', download_dir='/ml/nltk_data') else 1)"; do \
+            if [ "$attempt" -ge "$NLTK_MAX_ATTEMPTS" ]; then \
+                echo "ERROR: failed to download NLTK resource '$resource' after $NLTK_MAX_ATTEMPTS attempts" >&2; \
+                exit 1; \
+            fi; \
+            attempt=$((attempt + 1)); \
+            sleep "$NLTK_RETRY_DELAY_SECONDS"; \
+        done; \
+    done
 
 ENV NLTK_DATA='/ml/nltk_data'
-RUN chown -R demisto:demisto /ml && chmod -R 775 /ml
+# nltk>=3.10.4 only reads data owned by root or the running user and not group/world-writable.
+RUN chown -R demisto:demisto /ml && chmod -R 775 /ml \
+  && chown -R root:root /ml/nltk_data && chmod -R go-w /ml/nltk_data
+
+# set the number of threads for numpy libs
+ENV OPENBLAS_NUM_THREADS=1
+ENV OMP_NUM_THREADS=4

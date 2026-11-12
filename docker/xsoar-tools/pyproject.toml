@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "dockerfiles"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "~3.12"
+demisto-sdk = ">=1.39.6"
+demisto-py = "*"
+mypy_extensions = "1.0.0"
+cryptography = ">=48.0.1"
+ujson = ">=5.12.1"
+orjson = ">=3.11.5"
+nltk = ">=3.10.4"
+pipenv = ">=2022.1.8"
+soupsieve = ">=2.8.4"
+urllib3 = ">=2.7.0"
+gitpython = ">=3.1.50"
+protobuf = ">=5.29.6"
+google-api-core = ">=2.14.0"
+google-cloud-storage = ">=2.0.0"
+google-cloud-core = ">=2.0.0"
+oauthlib = ">=4.0.1"
+pyasn1 = ">=0.6.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "dockerfiles"
+version = "0.1.0"
+description = ""
+authors = ["Cortex XSOAR"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "~3.11" # because of this issue we still using 3.11 https://github.com/mandiant/stringsifter/issues/41
+stringsifter = "*"
+scikit-learn = "==1.3.0" # pinned to match the version stringsifter's bundled models were pickled with, avoids sklearn InconsistentVersionWarning
+setuptools = ">=78.1.1"
+urllib3 = ">=2.6.3"
+certifi = ">=2026.10.19"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

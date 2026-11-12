@@ -1,0 +1,19 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+pysigma = "*"
+pysigma-backend-cortexxdr = "*"
+pysigma-backend-splunk = "*"
+pysigma-backend-sentinelone = "*"
+pySigma-backend-QRadar-AQL = "*"
+pysigma-backend-kusto = "*"
+pysigma-backend-carbonblack = "*"
+pysigma-backend-elasticsearch = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.12"

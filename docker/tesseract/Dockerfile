@@ -1,44 +1,22 @@
-
-FROM demisto/python3-deb:3.9.6.24019
-
-RUN apt-get update && apt-get -t buster-backports install -y --no-install-recommends \
-  tesseract-ocr \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && apt-get -t buster-backports install -y --no-install-recommends \
-  tesseract-ocr-ara \
-  tesseract-ocr-chi-sim \
-  tesseract-ocr-chi-sim-vert \
-  tesseract-ocr-chi-tra \
-  tesseract-ocr-chi-tra-vert \
-  tesseract-ocr-deu \
-  tesseract-ocr-fra \
-  tesseract-ocr-heb \
-  tesseract-ocr-ita \
-  tesseract-ocr-jpn \
-  tesseract-ocr-jpn-vert \
-  tesseract-ocr-pol \
-  tesseract-ocr-por \
-  tesseract-ocr-rus \
-  tesseract-ocr-spa \
-  tesseract-ocr-swe \
-  tesseract-ocr-tur \
-  && tesseract --version \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && apt-get -t buster-backports install -y --no-install-recommends \
-  imagemagick \
-  file \
-  && rm -rf /var/lib/apt/lists/*
-
-# Python packages not needed
-# COPY requirements.txt .
-
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-#   gcc \
-#   python3-dev \
-# && pip install --no-cache-dir -r requirements.txt \
-# && apt-get purge -y --auto-remove \
-#   gcc \
-#   python3-dev \
-# && rm -rf /var/lib/apt/lists/*
+# Last modified: 2026-10-26T05:51:06.900244+00:00
+FROM demisto/python3-deb:3.12.15.14089014
+RUN apt-get update && apt-get upgrade -y && apt-get -t trixie-backports install  \
+    gcc g++ wget git pkg-config \
+    make autoconf automake libtool libpng-dev  \
+    libjpeg-dev libtiff5-dev zlib1g-dev libleptonica-dev  \
+    libicu-dev libpango1.0-dev libleptonica6 -y \
+&& mkdir /build && cd /build && git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git \
+&& cd tesseract  \
+&& ./autogen.sh && ./configure && gmake && make install && ldconfig \
+&& apt-get -t trixie-backports install -y --no-install-recommends imagemagick file \
+&& rm -rf /var/lib/apt/lists/* \
+&& mkdir -p /usr/local/share/tessdata \
+&& cd /usr/local/share/tessdata \
+&& for lang in eng ara chi_sim chi_sim_vert chi_tra chi_tra_vert deu fra heb ita jpn jpn_vert pol por rus spa swe tur ; do \
+    wget -q "https://github.com/tesseract-ocr/tessdata_best/raw/main/${lang}.traineddata" || \
+    wget -q "https://github.com/tesseract-ocr/tessdata/raw/main/${lang}.traineddata" ; \
+done \
+&& apt-get purge -y --auto-remove gcc g++ pkg-config make autoconf automake libtool libpng-dev git \
+libjpeg-dev libtiff5-dev zlib1g-dev libleptonica-dev libicu-dev libpango1.0-dev \
+&& rm -rf /build \
+&& tesseract --version --list-langs

@@ -6,10 +6,21 @@ verify_ssl = true
 [dev-packages]
 
 [packages]
-dxlclient = "*"
+dxlclient = ">=5.7.0.0"
 dxlmarclient = "*"
 dxltieclient = "*"
-
+PySocks = ">=1.7.1"
+requests = {extras = ["socks"],version = "*"}
+olefile = "*"
+python-dateutil = "*"
+dateparser = "*"
+pyyaml = "*"
+funcy = "*"
+tldextract = "*"
+more-itertools = "*"
+defusedxml = "*"
+msgpack = ">=0.5,<1.0.0"
+urllib3 = ">=2.7.0"
 
 [requires]
-python_version = "3.7"
+python_version = "3.12"

@@ -1,0 +1,18 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+syslogmp = "*"
+gevent = "*"
+uvicorn = "*"
+fastapi = "*"
+pydantic = "*"
+syslog-rfc5424-parser = "*"
+setuptools = ">=84.0.0" # need just because the version comes from the dependencies are lower, we can remove it once ready
+
+[dev-packages]
+
+[requires]
+python_version = "3.12"

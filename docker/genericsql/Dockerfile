@@ -1,5 +1,6 @@
+# Last modified: 2026-10-28T06:16:02.383844+00:00
 
-FROM demisto/python3-deb:3.9.6.24019
+FROM demisto/python3-deb:3.12.15.14089014
 
 COPY requirements.txt .
 COPY odbcinst.ini /etc/odbcinst.ini
@@ -8,11 +9,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   unixodbc \
   freetds-bin \
   libpq5 \
-  libaio1 \
+  libaio1t64 \
   wget \
   unzip \
-  libssl1.1 \
+  libssl3 \
 && rm -rf /var/lib/apt/lists/*
+
+# The t64 rebuild ships libaio.so.1t64; the Oracle client looks for libaio.so.1.
+RUN ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1
 
 # install oracle instant client
 RUN mkdir -p /opt/oracle && \
@@ -29,7 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libc-dev \
   libssl-dev \
   unixodbc-dev \
-&& wget ftp://ftp.freetds.org/pub/freetds/stable/freetds-1.1.39.tar.gz \
+# && wget ftp://ftp.freetds.org/pub/freetds/stable/freetds-1.1.39.tar.gz \
+&& wget --no-check-certificate https://www.freetds.org/files/stable/freetds-1.1.39.tar.gz \
 && tar -xzf freetds-1.1.39.tar.gz \
 && cd freetds-1.1.39 \
 && ./configure --with-openssl --with-unixodbc=/usr --enable-msdblib \
@@ -47,11 +52,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install the Microsoft ODBC driver for SQL Server (Linux)
 RUN apt-get update \
-&& apt-get install -y --allow-downgrades gpgv=2.2.12-1+deb10u1 gnupg2 curl apt-utils \
-&& curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
-&& curl https://packages.microsoft.com/config/debian/10/prod.list > /etc/apt/sources.list.d/mssql-release.list \
+&& apt-get install -y --allow-downgrades gpgv gnupg2 curl apt-utils \
+&& curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+&& curl -fsSL https://packages.microsoft.com/config/debian/12/prod.list | tee /etc/apt/sources.list.d/mssql-release.list \
+&& echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
 && apt-get update \
-&& ACCEPT_EULA=Y apt-get install msodbcsql17 \
+&& ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
 && apt-get install -y unixodbc-dev libgssapi-krb5-2
 
 # install python packages
@@ -70,6 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libffi-dev \
   python3-dev \
   unixodbc-dev \
+  curl \
 && rm -rf /var/lib/apt/lists/*
 
 # Handling the issue described here https://github.com/mkleehammer/pyodbc/issues/610#issuecomment-534920201 by using TLS v1

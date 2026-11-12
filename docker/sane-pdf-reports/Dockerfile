@@ -1,12 +1,16 @@
-# Last modified: Thursday, 11 Nov 2021
-FROM demisto/python3-deb:3.9.6.22912
+# Last modified: 2026-10-25T05:49:12.030962+00:00
+FROM demisto/python3-deb-bullseye:3.12.11.12343672
 
 WORKDIR "/app"
 
-COPY ./get_build_artifacts.py .
-
 SHELL ["/bin/bash", "-c"]
+
+RUN pip install --no-cache-dir "urllib3>=2.8.0" "certifi>=2026.10.19"
+
+# Debian 11 has reached end of life; its packages are served from the archive host.
+RUN sed -i 's|http://deb.debian.org|http://archive.debian.org|g' /etc/apt/sources.list
 RUN apt-get update -y -q && \
+    apt-get upgrade -y -q && \
     apt-get install -y -q nodejs \
     npm gconf-service \
     libasound2 libatk1.0-0 libatk-bridge2.0-0 \
@@ -20,21 +24,35 @@ RUN apt-get update -y -q && \
     libxext6 libxfixes3 libxi6 libxrandr2 \
     libxrender1 libxss1 libxtst6 \
     ca-certificates fonts-liberation \
-    libappindicator1 libnss3 lsb-release \
+    libnss3 lsb-release \
     xdg-utils wget locales \
     fonts-arphic-ukai fonts-arphic-uming \
-    fonts-ipafont-mincho fonts-ipafont-gothic \
+    fonts-ipafont-mincho \
+    fonts-ipafont-gothic \
     fonts-unfonts-core \
     fonts-noto-cjk \
     fonts-noto-core \
     libgbm-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && npm i npm@latest -g
+    && npm install -g npm@8.19.4
 
-RUN npm i puppeteer@5.3.1 && ln -s /app/node_modules/puppeteer/.local-chromium/linux-*/chrome-linux/chrome /usr/bin/chromium-browser
+# This line can be removed after puppeteer will update the brace-expansion in their side to >=5.0.12
+# https://github.com/puppeteer/puppeteer/blob/main/package-lock.json
+RUN echo '{"name":"app","version":"1.0.0","overrides":{"brace-expansion":"5.0.12"}}' > package.json && \
+    npm install puppeteer@5.3.1 && \
+    ln -s /app/node_modules/puppeteer/.local-chromium/linux-*/chrome-linux/chrome /usr/bin/chromium-browser
+# install gsutil acc to https://cloud.google.com/storage/docs/gsutil_install
+RUN apt-get update -y -q && apt-get install -y -q apt-transport-https ca-certificates gnupg curl \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && apt-get update -y && apt-get install google-cloud-cli -y
 
-RUN python get_build_artifacts.py --project sane-reports --branch master --filter "sane-report$" \
-    && mv sane-report sane-report.tar && tar -xvf sane-report.tar && rm -f sane-report.tar
+
+RUN gsutil cp -r gs://sane-reports-artifacts/sane-report.tar . \
+    && tar -xvf sane-report.tar && rm -f sane-report.tar
 
 # Update permissions and ownership on /app dir
 RUN chown -R root:demisto /app/ && chmod 775 /app/ && chmod 775 /app/dist
+
+RUN npm uninstall -g npm && apt-get purge -y --auto-remove git npm apt-transport-https ca-certificates gnupg curl google-cloud-cli \
+    python3-dev lsb-release \
+    && rm -rf /var/lib/apt/lists/*

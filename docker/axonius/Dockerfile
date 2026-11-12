@@ -1,8 +1,10 @@
+# Last modified: 2026-10-28T06:16:02.383844+00:00
 
-FROM demisto/crypto:1.0.0.23151
+FROM demisto/crypto:1.0.0.14109060
 
 COPY requirements.txt .
 
 RUN apk --update add --no-cache --virtual .build-dependencies python3-dev build-base wget git \
   && pip install --no-cache-dir -r requirements.txt \
+  && pip install --no-cache-dir "pyopenssl>=26.0.0" "cryptography>=48.0.1" "urllib3>=2.6.3" \
   && apk del .build-dependencies

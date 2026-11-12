@@ -1,13 +1,11 @@
+# Last modified: 2026-10-28T06:16:02.383844+00:00
 
-FROM demisto/crypto:1.0.0.23151
+FROM demisto/crypto:1.0.0.14109060
 
 COPY requirements.txt .
 
-RUN apk --update add --no-cache libxml2 \
-libxslt
-
+# The lxml wheel statically links its own libxml2/libxslt, so the system
+# copies are not needed at runtime and only add an outdated parser to the image.
 RUN apk --update add --no-cache --virtual .build-dependencies python3-dev build-base wget git \
-  libxml2-dev \
-  libxslt-dev \
   && pip install --no-cache-dir -r requirements.txt \
   && apk del .build-dependencies

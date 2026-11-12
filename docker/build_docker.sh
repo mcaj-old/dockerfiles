@@ -3,16 +3,114 @@
 # exit on errors
 set -e
 
-REVISION=${CIRCLE_BUILD_NUM:-`date +%s`}
-CURRENT_DIR=`pwd`
-SCRIPT_DIR=$(dirname ${BASH_SOURCE})
+# Associative array to track failed docker images in upload mode
+# Keys: image_name, Values: step that failed
+declare -A FAILED_DOCKERS
+
+# -- Color support ---------------------------------------------------------
+# Detect color support: enabled if stdout is a terminal (or forced via env),
+# disabled with --no-color flag or when piped/redirected.
+NO_COLOR="false"   # set to "true" by --no-color flag
+
+function setup_colors {
+    if [ "${NO_COLOR}" = "true" ]; then
+        COLOR_ENABLED="false"
+    elif [ -t 1 ] && [ -z "${NO_COLOR_ENV+x}" ]; then
+        # stdout is a terminal and NO_COLOR env var is not set
+        local colors
+        colors=$(tput colors 2>/dev/null || echo 0)
+        if [ "${colors}" -ge 8 ]; then
+            COLOR_ENABLED="true"
+        else
+            COLOR_ENABLED="false"
+        fi
+    else
+        COLOR_ENABLED="false"
+    fi
+
+    if [ "${COLOR_ENABLED}" = "true" ]; then
+        C_RESET='\033[0m'
+        C_GRAY='\033[0;90m'        # log prefix (dark gray)
+        C_LOG='\033[0;37m'         # log body (light gray / white)
+        C_LABEL='\033[0;36m'       # banner labels (cyan)
+        C_VALUE='\033[1;37m'       # banner values (bold white)
+        C_TITLE='\033[1;33m'       # banner titles (bold yellow)
+        C_BORDER='\033[0;35m'      # banner borders (magenta)
+        C_BAR_FILL='\033[1;32m'    # progress bar filled (bold green)
+        C_BAR_EMPTY='\033[0;90m'   # progress bar empty (dark gray)
+        C_RED='\033[0;31m'         # errors (red)
+        C_GREEN='\033[0;32m'       # success (green)
+    else
+        C_RESET=''
+        C_GRAY=''
+        C_LOG=''
+        C_LABEL=''
+        C_VALUE=''
+        C_TITLE=''
+        C_BORDER=''
+        C_BAR_FILL=''
+        C_BAR_EMPTY=''
+        C_RED=''
+        C_GREEN=''
+    fi
+}
+
+# Record a docker image failure and return the appropriate exit code.
+# In upload mode: records to FAILED_DOCKERS and returns 0 (continue).
+# In non-upload mode: logs the error and returns 1 (fail).
+# Usage: record_failure "image" "step" "message"; return $?
+# param $1: image name
+# param $2: step that failed (build, validation)
+# param $3: error message
+function record_failure {
+    local img="$1"
+    local step="$2"
+    local err_msg="$3"
+    red_error "Image '${img}' failed at step '${step}': ${err_msg}"
+    if [ "${UPLOAD_MODE}" = "true" ]; then
+        FAILED_DOCKERS["${img}"]="${step}"
+        return 0
+    fi
+    return 1
+}
+
+# Write the failed dockers JSON report to ARTIFACTS_FOLDER
+function write_failed_dockers_report {
+    local report_file="${ARTIFACTS_FOLDER}/failed_dockers.json"
+    if [ ${#FAILED_DOCKERS[@]} -eq 0 ]; then
+        echo '{}' > "${report_file}"
+    else
+        echo '{' > "${report_file}"
+        local first=true
+        for img in "${!FAILED_DOCKERS[@]}"; do
+            if [ "${first}" = true ]; then
+                first=false
+            else
+                echo ',' >> "${report_file}"
+            fi
+            # Escape any double quotes in the image name (unlikely but safe)
+            local escaped_img="${img//\"/\\\"}"
+            local escaped_step="${FAILED_DOCKERS[$img]//\"/\\\"}"
+            printf '  "%s": {"step": "%s"}' "${escaped_img}" "${escaped_step}" >> "${report_file}"
+        done
+        echo '' >> "${report_file}"
+        echo '}' >> "${report_file}"
+    fi
+    echo "Failed dockers report written to ${report_file}"
+    cat "${report_file}"
+}
+
+REVISION=${CI_PIPELINE_ID:-$(date +%s)}
+BUILT_DOCKERS=""
+SUCCEEDED_IMAGES=()
+IMAGE_ARTIFACTS=""
+CURRENT_DIR=$(pwd)
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 DOCKER_SRC_DIR=${SCRIPT_DIR}
 if [[ "${DOCKER_SRC_DIR}" != /* ]]; then
     DOCKER_SRC_DIR="${CURRENT_DIR}/${SCRIPT_DIR}"
 fi
-DOCKERFILES_TRUST_DIR="${DOCKER_SRC_DIR}/../dockerfiles-trust"
-
-# parse a propty form build.conf file in current dir
+# parse a property form build.conf file in current dir
 # param $1: property name
 # param $2: default value
 function prop {
@@ -20,154 +118,332 @@ function prop {
         echo "${2}"
         return 0
     fi
-    local RES=$(grep "^${1}=" build.conf | cut -d'=' -f2)
+    local RES
+    RES=$(grep "^${1}=" build.conf | cut -d'=' -f2)
     if [[ "$RES" ]]; then
         echo "$RES"
-    else 
+    else
         echo "${2}"
     fi
 }
 
-DOCKER_LOGIN_DONE=${DOCKER_LOGIN_DONE:-no}
-function docker_login {
-    if [ "${DOCKER_LOGIN_DONE}" = "yes" ]; then
-        return 0;
-    fi
-    if [ -z "${DOCKERHUB_USER}" ]; then
-        echo "DOCKERHUB_USER not set. Not logging in to docker hub"
-        return 1;
-    fi
-    if [ -z "$DOCKERHUB_PASSWORD" ]; then
-        #for local testing scenarios to allow password to be passed via stdin
-        docker login -u "${DOCKERHUB_USER}" 
-    else
-        docker login -u "${DOCKERHUB_USER}" -p "${DOCKERHUB_PASSWORD}" 
-    fi
-    if [ $? -ne 0 ]; then
-        echo "Failed docker login for user: ${DOCKERHUB_USER}"
-        return 2; 
-    fi
-    DOCKER_LOGIN_DONE=yes
-    return 0;
-}
-
-CR_LOGIN_DONE=no
-function cr_login {
-    if [ "${CR_LOGIN_DONE}" = "yes" ]; then
-        return 0;
-    fi
-    if [ -z "${CR_USER}" ]; then
-        echo "CR_USER not set. Not logging in to container registry"
-        return 1;
-    fi
-    cr_url="https://$(echo ${CR_REPO} | cut -d / -f 1)"
-    if [ -z "$CR_PASSWORD" ]; then
-        #for local testing scenarios to allow password to be passed via stdin
-        docker login -u "${CR_USER}" ${cr_url}
-    else
-        docker login -u "${CR_USER}" -p "${CR_PASSWORD}" ${cr_url}
-    fi
-    if [ $? -ne 0 ]; then
-        echo "Failed docker login to CR repo"
-        exit 3; 
-    fi
-    CR_LOGIN_DONE=yes
-    return 0;
-}
-
-SIGN_SETUP_DONE=no
-function sign_setup {
-    if [ "${SIGN_SETUP_DONE}" = "yes" ]; then
-        return 0;
-    fi
-    if [ -z "${DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE}" -o -z "${DOCKER_CONTENT_TRUST_ROOT_PASSPHRASE}" -o -z "${DOCKERFILES_TRUST_GIT}" ]; then
-        echo "Content trust passphrases not set. Not setting up docker signing."
-        return 1;
-    fi
-    if [ ! -d "${DOCKERFILES_TRUST_DIR}" ]; then
-        git clone "${DOCKERFILES_TRUST_GIT}" "${DOCKERFILES_TRUST_DIR}"   
-        git config --file "${DOCKERFILES_TRUST_DIR}/.git/config"  user.email "dc-builder@users.noreply.github.com"
-        git config --file "${DOCKERFILES_TRUST_DIR}/.git/config" user.name "dc-builder"           
-    else
-        echo "${DOCKERFILES_TRUST_DIR} already checked out"
-    fi
-    export DOCKER_CONFIG="${DOCKERFILES_TRUST_DIR}/.docker"
-    SIGN_SETUP_DONE=yes
-    return 0;
-}
-
-function commit_dockerfiles_trust {
-    cwd="$PWD"
-    cd "${DOCKERFILES_TRUST_DIR}"
-    if [[ $(git status --short) ]]; then
-        echo "dockerfiles-trust: found modified/new files to commit"
-        git status --short
-        git pull
-        echo "starting commit loop..."
-        git add .
-        git commit -m "`date`: trust update from PR: ${CIRCLE_PULL_REQUEST}"
-        COMMIT_DONE=no
-        for i in 1 2 3 4 5; do
-            if git push; then
-                echo "Push done successfully"
-                COMMIT_DONE=yes
-                break;
-            else
-                echo "Push failed. Trying pull and then another..."
-                sleep $(((RANDOM % 10) + 1))
-                git pull --rebase
-            fi
-        done
-        if [ "${COMMIT_DONE}" = "no" ]; then
-            echo "Failed committing trust data"
-            exit 5
+# param $1: filename
+# param $2: regex pattern
+function get_version_from_file() {
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ $line =~ $2 ]]; then
+             version_from_file="${BASH_REMATCH[1]}"
         fi
-    else
-        echo "dockerfiles-trust: no changed files. nothing to commit and push"
-    fi
-    cd "$cwd"
+    done < "$1"
+
+
 }
 
-# build docker. 
+red_error() {
+    echo -e "${C_RED}$1${C_RESET}"
+}
+
+# -- Terminal width detection (fallback to 160 for CI / non-interactive) --
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 160)
+if [ "${TERM_WIDTH}" -lt 40 ]; then
+    TERM_WIDTH=160
+fi
+
+# -- Banner / separator helpers (ASCII-safe, no special unicode) ----------
+# Print a full-width line of a given character
+# param $1: fill character (default "=")
+function print_separator {
+    local ch="${1:-=}"
+    printf '%*s\n' "${TERM_WIDTH}" '' | tr ' ' "${ch}"
+}
+
+# Print a centered text line padded to terminal width
+# param $1: text to center
+function print_centered {
+    local text="$1"
+    local text_len=${#text}
+    local pad_total=$((TERM_WIDTH - text_len))
+    local pad_left=$((pad_total / 2))
+    local pad_right=$((pad_total - pad_left))
+    if [ "${pad_total}" -le 0 ]; then
+        echo "$text"
+    else
+        printf '%*s%s%*s\n' "$pad_left" '' "$text" "$pad_right" ''
+    fi
+}
+
+# Print a boxed banner with ### borders, auto-sized to terminal width
+# Lines containing " : " are split into label (colored C_LABEL) and value (colored C_VALUE).
+# Lines that don't contain " : " are treated as titles (colored C_TITLE), or blank.
+# param $@: lines of text to display inside the box
+function print_box_banner {
+    # Layout: "###   " (6) + inner_width + "   ###" (6) = inner_width + 12
+    # Separator: "###" (3) + sep_inner + "###" (3) = sep_inner + 6
+    # For alignment: inner_width + 12 = sep_inner + 6  =>  inner_width = TERM_WIDTH - 12
+    local inner_width=$((TERM_WIDTH - 12))
+    if [ "${inner_width}" -lt 20 ]; then
+        inner_width=20
+    fi
+    local sep_inner=$((inner_width + 6))  # keeps total width consistent
+    echo ""
+    local sep_line
+    sep_line=$(printf '%*s' "${sep_inner}" '' | tr ' ' '=')
+    printf '%b###%s###%b\n' "${C_BORDER}" "${sep_line}" "${C_RESET}"
+    printf '%b###%*s###%b\n' "${C_BORDER}" "${sep_inner}" '' "${C_RESET}"
+    for line_text in "$@"; do
+        if [ -z "${line_text}" ]; then
+            # Empty line
+            printf '%b###%b   %-*s   %b###%b\n' "${C_BORDER}" "${C_RESET}" "${inner_width}" "" "${C_BORDER}" "${C_RESET}"
+        elif [[ "${line_text}" == *" : "* ]]; then
+            # Label : Value line -- split at first " : "
+            local label="${line_text%% : *} : "
+            local value="${line_text#* : }"
+            local label_len=${#label}
+            local value_len=${#value}
+            local pad=$((inner_width - label_len - value_len))
+            if [ "${pad}" -lt 0 ]; then pad=0; fi
+            printf '%b###%b   %b%s%b%b%s%b%*s   %b###%b\n' \
+                "${C_BORDER}" "${C_RESET}" \
+                "${C_LABEL}" "${label}" "${C_RESET}" \
+                "${C_VALUE}" "${value}" "${C_RESET}" \
+                "${pad}" '' \
+                "${C_BORDER}" "${C_RESET}"
+        else
+            # Title line (no " : " separator)
+            local text_len=${#line_text}
+            local pad=$((inner_width - text_len))
+            if [ "${pad}" -lt 0 ]; then pad=0; fi
+            printf '%b###%b   %b%s%b%*s   %b###%b\n' \
+                "${C_BORDER}" "${C_RESET}" \
+                "${C_TITLE}" "${line_text}" "${C_RESET}" \
+                "${pad}" '' \
+                "${C_BORDER}" "${C_RESET}"
+        fi
+    done
+    printf '%b###%*s###%b\n' "${C_BORDER}" "${sep_inner}" '' "${C_RESET}"
+    printf '%b###%s###%b\n' "${C_BORDER}" "${sep_line}" "${C_RESET}"
+}
+
+# Print a simple section header with separator lines
+# param $1: header text
+function print_section_header {
+    local text="$1"
+    echo ""
+    print_separator "="
+    print_centered "  ${text}  "
+    print_separator "="
+    echo ""
+}
+
+# Print a sub-separator (shorter, for minor sections)
+# param $1: fill character (default "-")
+function print_sub_separator {
+    local ch="${1:--}"
+    printf '%*s\n' "${TERM_WIDTH}" '' | tr ' ' "${ch}"
+}
+
+# -- GitLab CI section helpers ---------------------------------------------
+# Opens a collapsed section in GitLab CI; no-op otherwise
+# param $1: section id (alphanumeric + underscore)
+# param $2: section header text
+function gitlab_section_start {
+    if [ -n "${GITLAB_CI}" ]; then
+        local section_id="$1"
+        local header="$2"
+        # \e[0K clears the line; [collapsed=true] makes it collapsed by default
+        printf "\e[0Ksection_start:%s:%s[collapsed=true]\r\e[0K%s\n" "$(date +%s)" "${section_id}" "${header}"
+    fi
+}
+
+# Closes a GitLab CI section; no-op otherwise
+# param $1: section id
+function gitlab_section_end {
+    if [ -n "${GITLAB_CI}" ]; then
+        local section_id="$1"
+        printf "\e[0Ksection_end:%s:%s\r\e[0K\n" "$(date +%s)" "${section_id}"
+    fi
+}
+
+# -- Logging helper -------------------------------------------------------
+# Prefixes every line from stdin with:
+#   [2024-07-21 07:18:07] [ 1/10] [image_name   ] <line>
+# param $1: image name
+# param $2: current 1-based index
+# param $3: total count
+# param $4: max image name length (for padding)
+# param $5: count field width (for padding)
+function log_prefix {
+    local img="$1" idx="$2" tot="$3" pad_name="$4" pad_count="$5"
+    while IFS= read -r line || [ -n "$line" ]; do
+        printf "%b[%s] [%${pad_count}d/%d] [%-${pad_name}s]%b %b%s%b\n" \
+            "${C_GRAY}" "$(date '+%Y-%m-%d %H:%M:%S')" "$idx" "$tot" "$img" "${C_RESET}" \
+            "${C_LOG}" "$line" "${C_RESET}"
+    done
+}
+
+if [ -n "$GITLAB_CI" ]; then
+    # Use plain buildkit progress in CI to avoid noisy progress bars
+    export BUILDKIT_PROGRESS=plain
+fi
+
+# build docker.
 # Param $1: docker dir with all relevant files
 function docker_build {
-    DOCKER_ORG=${DOCKER_ORG:-devdemisto}    
-    image_name=$(basename $1)
+    DOCKER_ORG=${DOCKER_ORG:-devdemisto}
+    DOCKER_ORG_DEMISTO=demisto
+    image_name=$(basename "$1")
     echo "Starting build for dir: $1, image: ${image_name}, pwd: $(pwd)"
-    cd $1        
-    if  [[ "$CIRCLE_BRANCH" == "master" ]] && [[ "$(prop 'devonly')" ]]; then
+    cd "$1"
+    if  [[ "${CI_COMMIT_REF_NAME}" == "master" ]] && [[ "$(prop 'devonly')" ]]; then
         echo "== skipping image [${image_name}] as it is marked devonly =="
         return 0
     fi
-    VERSION=$(prop 'version' '1.0.0')    
+
+    VERSION=$(prop 'version' '1.0.0')
     VERSION="${VERSION}.${REVISION}"
     echo "${image_name}: using version: ${VERSION}"
     image_full_name="${DOCKER_ORG}/${image_name}:${VERSION}"
+
+    if [[ "$(prop 'deprecated')" ]]; then
+        echo "${DOCKER_ORG_DEMISTO}/${image_name} image is deprecated, checking whether the image is listed in the deprecated list or not"
+        reason=$(prop 'deprecated_reason')
+        set +e
+        ${PY3CMD} "${DOCKER_SRC_DIR}"/add_image_to_deprecated_or_internal_list.py "${DOCKER_ORG_DEMISTO}"/"${image_name}" "${reason}" "${DOCKER_SRC_DIR}"/deprecated_images.json
+        local deprecated_rc=$?
+        set -e
+        if [ $deprecated_rc -ne 0 ]; then
+            echo "Warning: add_image_to_deprecated_or_internal_list.py failed with exit code ${deprecated_rc}"
+            record_failure "${image_name}" "build" "add_image_to_deprecated_or_internal_list.py failed with exit code ${deprecated_rc}"
+            return $?
+        fi
+    fi
+
     del_requirements=no
-    if [ -f "Pipfile" -a ! -f "requirements.txt" ]; then
+    if [ -f "Pipfile" ] && [ ! -f "requirements.txt" ]; then
         if [ ! -f "Pipfile.lock" ]; then
             echo "Error: Pipfile present without Pipfile.lock. Make sure to commit your Pipfile.lock file"
             return 1
         fi
-        pipenv --rm || echo "Proceeding. It is ok that no virtualenv is available to remove"
-        PIPENV_YES=yes pipenv lock -r > requirements.txt
-        echo "Pipfile lock generated requirements.txt: "
-        cat requirements.txt
-        # del_requirements=yes
+
+        if [[ "$(prop 'dont_generate_requirements')" ]]; then
+          echo 'Not generating requirements as dont_generate_requirements is true' # only implemented for pipenv
+        else
+          pipenv --rm || echo "Proceeding. It is ok that no virtualenv is available to remove"
+          set +e
+          pipenv install --deploy # fails if lock is outdated
+          local pipenv_rc=$?
+          set -e
+          if [ $pipenv_rc -ne 0 ]; then
+              echo "pipenv install --deploy failed with exit code ${pipenv_rc}"
+              record_failure "${image_name}" "build" "pipenv install --deploy failed with exit code ${pipenv_rc}"
+              return $?
+          fi
+          pipenv requirements --exclude-markers > requirements.txt
+          echo "Pipfile lock generated requirements.txt: "
+          print_separator "#"
+          cat requirements.txt
+          print_separator "#"
+          [ ! -f requirements.txt ] && echo "WARNING: requirements.txt does not exist, this is ok if python usage is not intended."
+          [ ! -s requirements.txt ] && echo "WARNING: requirements.txt is empty"
+          # del_requirements=yes
+        fi
+
     fi
+
+    if [ -f "pyproject.toml" ] && [ ! -f "requirements.txt" ]; then
+       if [ ! -f "poetry.lock" ]; then
+            echo "Error: pyproject.toml present without poetry.lock. Make sure to commit your poetry.lock file"
+            return 1
+        fi
+
+      echo "starting to install dependencies from poetry..."
+      poetry --version
+      set +e
+      poetry export -f requirements.txt --output requirements.txt --without-hashes
+      local poetry_rc=$?
+      set -e
+      if [ $poetry_rc -ne 0 ]; then
+          echo "poetry export failed with exit code ${poetry_rc}"
+          record_failure "${image_name}" "build" "poetry export failed with exit code ${poetry_rc}"
+          return $?
+      fi
+      echo "poetry.lock generated requirements.txt file: "
+      print_separator "#"
+      cat requirements.txt
+      print_separator "#"
+
+    fi
+
     tmp_dir=$(mktemp -d)
     cp Dockerfile "$tmp_dir/Dockerfile"
     echo "" >> "$tmp_dir/Dockerfile"
     echo "ENV DOCKER_IMAGE=$image_full_name" >> "$tmp_dir/Dockerfile"
-    docker build -f "$tmp_dir/Dockerfile" . -t ${image_full_name} \
+
+    if [[ "$(prop 'deprecated')" ]]; then
+        echo "ENV DEPRECATED_IMAGE=true" >> "$tmp_dir/Dockerfile"
+        reason=$(prop 'deprecated_reason')
+        echo "ENV DEPRECATED_REASON=\"$reason\"" >> "$tmp_dir/Dockerfile"
+    fi
+
+    set +e
+    docker buildx build -f "$tmp_dir/Dockerfile" . -t "${image_full_name}" \
         --label "org.opencontainers.image.authors=Demisto <containers@demisto.com>" \
         --label "org.opencontainers.image.version=${VERSION}" \
-        --label "org.opencontainers.image.revision=${CIRCLE_SHA1}"
+        --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
+    local build_exit_code=$?
+    set -e
+
+    if [ $build_exit_code -ne 0 ]; then
+        rm -rf "$tmp_dir"
+        record_failure "${image_name}" "build" "docker buildx build failed with exit code ${build_exit_code}"
+        return $?
+    fi
+
+    if [[ -e "dynamic_version.sh" ]]; then
+      echo "dynamic_version.sh file was found"
+      set +e
+      dynamic_version=$(docker run --rm -i "$image_full_name" sh < dynamic_version.sh)
+      local dv_exit_code=$?
+      set -e
+      if [ $dv_exit_code -ne 0 ]; then
+          rm -rf "$tmp_dir"
+          record_failure "${image_name}" "build" "dynamic_version.sh execution failed with exit code ${dv_exit_code}"
+          return $?
+      fi
+      if [ -z "${dynamic_version}" ]; then
+          rm -rf "$tmp_dir"
+          record_failure "${image_name}" "build" "dynamic_version.sh returned empty version"
+          return $?
+      fi
+      echo "dynamic_version $dynamic_version"
+      VERSION="${dynamic_version}.${REVISION}"
+      image_full_name="${DOCKER_ORG}/${image_name}:${VERSION}"
+
+      # add the last layer and rebuild. Everything should be cached besides this layer
+      echo "ENV DOCKER_IMAGE=$image_full_name" >> "$tmp_dir/Dockerfile"
+
+      echo "running docker build again with tag $image_full_name"
+
+      set +e
+      docker buildx build -f "$tmp_dir/Dockerfile" . -t "${image_full_name}" \
+        --label "org.opencontainers.image.authors=Demisto <containers@demisto.com>" \
+        --label "org.opencontainers.image.version=${VERSION}" \
+        --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
+      local rebuild_exit_code=$?
+      set -e
+
+      if [ $rebuild_exit_code -ne 0 ]; then
+          rm -rf "$tmp_dir"
+          record_failure "${image_name}" "build" "docker buildx rebuild (dynamic version) failed with exit code ${rebuild_exit_code}"
+          return $?
+      fi
+    fi
     rm -rf "$tmp_dir"
-    if [ ${del_requirements} = "yes" ]; then
+
+    if [ "${del_requirements}" = "yes" ]; then
         rm requirements.txt
     fi
-    if [ -n "$CI" ]; then
+    if [ -n "${GITLAB_CI}" ]; then
         echo "Checking that source files were not modified by build..."
         DIFF_OUT=$(git diff -- .)
         if [[ -n "$DIFF_OUT" ]]; then
@@ -184,163 +460,526 @@ function docker_build {
             return 1
         fi
     fi
+
+    print_separator "="
+    print_centered "$(date): Starting version verification on image: ${image_name}"
+    print_separator "="
+    echo "Checking that the image python version match with the Pipfile/pyproject.toml python version..."
+    # Get the python version from the docker metadata.
+    set +e
+    PYTHON_VERSION=$(docker inspect "$image_full_name" | jq -r '.[].Config.Env[]|select(match("^PYTHON_VERSION"))|.[index("=")+1:]')
+    local inspect_rc=$?
+    set -e
+    if [ $inspect_rc -ne 0 ]; then
+        echo "Warning: docker inspect failed with exit code ${inspect_rc} for image ${image_full_name}"
+        PYTHON_VERSION=""
+    fi
+    PY3CMD="python3"
+    if [ -f "Pipfile" ]; then
+        file_name="Pipfile"
+        get_version_from_file 'Pipfile' 'python_version = \"([^\"]+)\"'
+    fi
+    if [ -f "pyproject.toml" ]; then
+        file_name="pyproject.toml"
+        get_version_from_file 'pyproject.toml' '^python = \"([^\"]+)\"'
+    fi
+    if [ -f "Pipfile" ] || [ -f "pyproject.toml" ]; then
+        if ! output=$("$PY3CMD" "${DOCKER_SRC_DIR}"/verify_version_matching.py "${PYTHON_VERSION}" "${version_from_file}" "${image_name}" "${file_name}"); then
+            errors+=("$output")
+        fi
+    fi
+
+
     if [[ "$(prop 'devonly')" ]]; then
         echo "Skipping license verification for devonly image"
     else
         PY3CMD="python3"
-        if command -v python3.7 >/dev/null 2>&1; then
-            PY3CMD="python3.7"
-        elif command -v python3.8 >/dev/null 2>&1; then
-            PY3CMD="python3.8"
+        set +e
+        "$PY3CMD" "${DOCKER_SRC_DIR}/verify_licenses.py" "${image_full_name}"
+        local license_exit_code=$?
+        set -e
+        if [ $license_exit_code -ne 0 ]; then
+            record_failure "${image_name}" "validation" "verify_licenses.py failed with exit code ${license_exit_code}"
+            return $?
         fi
-        $PY3CMD ${DOCKER_SRC_DIR}/verify_licenses.py ${image_full_name}
     fi
-    if [ -f "verify.py" ]; then
-        echo "==========================="            
-        echo "Verifying docker image by running the python script verify.py within the docker image"
-        cat verify.py | docker run --rm -i ${image_full_name} python '-'
-    fi
+    local filename
+    while IFS= read -r -d '' filename; do
+        print_sub_separator "-"
+        echo "Verifying docker image by running the python script $filename within the docker image"
+        set +e
+        cat "${filename}" | docker run --rm -i "${image_full_name}" python '-'
+        local verify_exit_code=$?
+        set -e
+        if [ $verify_exit_code -ne 0 ]; then
+            record_failure "${image_name}" "validation" "verify script ${filename} failed with exit code ${verify_exit_code}"
+            return $?
+        fi
+    done < <(find . -name "*verify.py" -print0)
+
     if [ -f "verify.ps1" ]; then
-        echo "==========================="            
+        print_sub_separator "-"
         echo "Verifying docker image by running the pwsh script verify.ps1 within the docker image"
         # use "tee" as powershell doesn't fail on throw when run with -c
-        cat verify.ps1 | docker run --rm -i ${image_full_name} sh -c 'tee > verify.ps1; pwsh verify.ps1'
-    fi
-    docker_trust=0
-    if sign_setup; then
-        docker_trust=1
-        echo "using DOCKER_TRUST=${docker_trust} DOCKER_CONFIG=${DOCKER_CONFIG}"
-    fi
-    if docker_login; then
-        env DOCKER_CONTENT_TRUST=$docker_trust DOCKER_CONFIG="${DOCKER_CONFIG}"  docker push ${image_full_name}
-        echo "Done docker push for: ${image_full_name}"
-        if [[ "$docker_trust" == "1" ]]; then
-            commit_dockerfiles_trust
-        fi
-        ${DOCKER_SRC_DIR}/post_github_comment.py ${image_full_name}        
-    else
-        echo "Skipping docker push"
-        if [ -n "$CI" ]; then
-            echo "Creating artifact of docker image..."
-            ARTDIR="${DOCKER_SRC_DIR}/../artifacts"
-            mkdir -p "${ARTDIR}"
-            IMAGENAMESAVE=`echo ${image_full_name} | tr / _`.tar
-            IMAGESAVE=${ARTDIR}/$IMAGENAMESAVE
-            docker save -o "$IMAGESAVE" ${image_full_name}
-            gzip "$IMAGESAVE"
-            cat << EOF
--------------------------
-
-Docker image [$image_full_name] has been saved as an artifact. It is available at the following link: 
-https://${REVISION}-161347705-gh.circle-artifacts.com/0/docker_images/$IMAGENAMESAVE.gz
-
-Load it locally into docker by running:
-
-\`\`\`
-curl -L "https://${REVISION}-161347705-gh.circle-artifacts.com/0/docker_images/$IMAGENAMESAVE.gz" | gunzip | docker load
-\`\`\`
-
---------------------------
-EOF
+        set +e
+        cat verify.ps1 | docker run --rm -i "${image_full_name}" sh -c 'tee > verify.ps1; pwsh verify.ps1'
+        local ps_verify_exit_code=$?
+        set -e
+        if [ $ps_verify_exit_code -ne 0 ]; then
+            record_failure "${image_name}" "validation" "verify.ps1 failed with exit code ${ps_verify_exit_code}"
+            return $?
         fi
     fi
-    
-
-    if [ -n "$CR_REPO" ] && cr_login; then
-        docker tag ${image_full_name} ${CR_REPO}/${image_full_name}
-        docker push ${CR_REPO}/${image_full_name} > /dev/null
-        echo "Done docker push for cr: ${image_full_name}"
-    else
-        echo "Skipping docker push for cr"
+    # -- Save image as gzipped tar --
+    IMAGE_NAME_SAVE="$(echo "${image_full_name}" | sed -e 's/\//__/g' -e 's/:/_/g').tar"
+    TAR_SAVE_DIR="${SAVE_DIR:-${ARTIFACTS_FOLDER}}"
+    if [[ ! -d "${TAR_SAVE_DIR}" ]]; then
+        mkdir -p "${TAR_SAVE_DIR}"
     fi
+    IMAGE_SAVE="${TAR_SAVE_DIR}/${IMAGE_NAME_SAVE}"
+    echo "Saving docker image to tar: ${IMAGE_SAVE}"
+    docker save -o "${IMAGE_SAVE}" "${image_full_name}"
+    if [ -n "${IMAGE_ARTIFACTS}" ]; then
+        IMAGE_ARTIFACTS="${IMAGE_ARTIFACTS},${IMAGE_SAVE}"
+    else
+        IMAGE_ARTIFACTS="${IMAGE_SAVE}"
+    fi
+    gzip "${IMAGE_SAVE}"
+
+    if [ -n "${BUILT_DOCKERS}" ]; then
+        BUILT_DOCKERS="${BUILT_DOCKERS},${image_full_name}"
+    else
+        BUILT_DOCKERS="${image_full_name}"
+    fi
+
+    print_sub_separator "-"
+    echo "Docker image [${image_full_name}] saved to ${IMAGE_SAVE}.gz"
+    print_sub_separator "-"
 
 }
 
-# default compare circle branch against master
-DIFF_COMPARE=origin/master...${CIRCLE_BRANCH}
+# default compare branch against master
+DIFF_COMPARE=origin/master...${CI_COMMIT_SHA}
 
-if [ -z "$CIRCLE_SHA1" ]; then
-    echo "CIRCLE_SHA1 not set. Assuming local testing."
-    CIRCLE_SHA1=testing
+# -- Usage / Help ----------------------------------------------------------
+function usage {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS] [IMAGE_NAME]
+
+Build and verify Docker images that have changed relative to a base commit.
+
+Positional arguments:
+  IMAGE_NAME              Build only the specified image (by directory name).
+                          When provided, DIFF_COMPARE is set to ALL (build regardless of diff).
+
+Options:
+  --upload                Run in upload/production mode. Requires --last-upload-commit
+                          and --files-to-prs. Failures are recorded but do not stop the build.
+  --last-upload-commit SHA
+                          The commit SHA to compare against in upload mode.
+  --files-to-prs PATH    Path to the files_to_prs.json mapping file (upload mode).
+  --save-dir DIR          Save docker tar files under the specified directory instead of
+                           ARTIFACTS_FOLDER. The directory will be created if it does not exist.
+  --dry-run               Simulate the build: skip github comments.
+  --no-color              Disable colored output (also respects NO_COLOR env var).
+  -h, --help              Show this help message and exit.
+
+Environment variables:
+  CI_COMMIT_SHA           Current commit SHA (auto-set in CI).
+  CI_COMMIT_REF_NAME      Current branch name (auto-set in CI).
+  CI_PIPELINE_ID          Pipeline/revision ID (auto-set in CI).
+  DOCKER_ORG              Docker Hub organization (default: devdemisto, or demisto on master).
+  ARTIFACTS_FOLDER        Directory for build artifacts (default: artifacts).
+  GITLAB_CI               Set automatically in GitLab CI runners.
+
+Examples:
+  # Build all changed images (CI default):
+  ./$(basename "$0")
+
+  # Build a single image locally:
+  ./$(basename "$0") python3-deb
+
+  # Dry-run upload mode:
+  ./$(basename "$0") --upload --last-upload-commit abc123 --files-to-prs files.json --dry-run
+
+  # Build a single image and save as tar to a custom directory:
+  ./$(basename "$0") --save-dir /tmp/my-dockers python3-deb
+EOF
+}
+
+# PARSE ARGUMENTS
+UPLOAD_MODE="false"
+DRY_RUN="false"
+SAVE_DIR=""
+docker_image_to_build=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0;;
+        --upload) UPLOAD_MODE="true"; shift;;
+        --last-upload-commit) LAST_UPLOAD_COMMIT="$2"; shift 2;;
+        --files-to-prs) FILES_TO_PRS="$2"; shift 2;;
+        --save-dir) SAVE_DIR="$2"; shift 2;;
+        --dry-run) DRY_RUN="true"; shift;;
+        --no-color) NO_COLOR="true"; shift;;
+        --*) echo "Unknown option: $1"; usage; exit 1;;
+        *) docker_image_to_build="$1"; shift;;
+    esac
+done
+
+if [[ -n "${docker_image_to_build}" ]]; then
+    if [[ ! -d  "${SCRIPT_DIR}/${docker_image_to_build}" ]]; then
+        echo "Image: [${docker_image_to_build}] specified as command line parameter but directory not found: [${SCRIPT_DIR}/${docker_image_to_build}]"
+        exit 1
+    fi
+    DIFF_COMPARE="ALL"
+    DOCKER_INCLUDE_GREP="/${docker_image_to_build}$"
+fi
+
+# Initialize color support (after --no-color flag is parsed)
+setup_colors
+
+if [ "${UPLOAD_MODE}" = "true" ]; then
+    if [ -z "${LAST_UPLOAD_COMMIT}" ]; then
+        echo "--last-upload-commit is required for --upload mode"
+        exit 1
+    fi
+    if [ -z "${FILES_TO_PRS}" ]; then
+        echo "--files-to-prs is required for --upload mode"
+        exit 1
+    fi
+    DIFF_COMPARE="${LAST_UPLOAD_COMMIT}...${CI_COMMIT_SHA}"
+    DOCKER_ORG=demisto
+    if [ "${DRY_RUN}" = "true" ]; then
+        DOCKER_ORG=devdemisto
+        echo "[DRY-RUN] Overriding DOCKER_ORG to devdemisto"
+    fi
+fi
+
+if [ -z "${CI_COMMIT_SHA}" ]; then
+    echo "CI_COMMIT_SHA not set. Assuming local testing."
+    CI_COMMIT_SHA=testing
     DOCKER_ORG=${DOCKER_ORG:-devtesting}
-    
-    if [ -z "$CIRCLE_BRANCH" ]; then
+
+    if [ -z "${CI_COMMIT_REF_NAME}" ]; then
         # simply compare against origin/master
         DIFF_COMPARE=origin/master
     fi
 fi
 
-
-if [[ ! $(which pyenv) ]] && [[ -n "${CIRCLECI}" ]]; then 
-    echo "pyenv not found. setting up necessary env for pyenv on circle ci";\
+if [[ ! $(which pyenv) ]] && [[ -n "${GITLAB_CI}" ]]; then
+    echo "pyenv not found. setting up necessary env for pyenv on CI";\
     export PATH="$HOME/.pyenv/bin:$PATH"
     eval "$(pyenv init -)"
     eval "$(pyenv virtualenv-init -)"
-    pyenv shell system $(pyenv versions --bare | grep 3.7)
+    pyenv shell system "$(pyenv versions --bare | grep 3.10)"
 fi
 
-echo "default python versions: "
-python --version || echo "python not found"
-python3 --version || echo "python3 not found"
-if [[ $(which pyenv) ]]; then
-    echo "pyenv versions:"
-    pyenv versions
-fi
-
-echo "=========== docker info =============="
-docker info
-echo "========================="
-
-if [[ -n "$1" ]]; then
-    if [[ ! -d  "${SCRIPT_DIR}/$1" ]]; then
-        echo "Image: [$1] specified as command line parameter but directory not found: [${SCRIPT_DIR}/$1]"
-        exit 1
-    fi
-    DIFF_COMPARE="ALL"
-    DOCKER_INCLUDE_GREP="/${1}$"
-fi
-
-if [ "$CIRCLE_BRANCH" == "master" ]; then
-    # on master we use the range obtained from CIRCLE_COMPARE_URL
-    # example of comapre url: https://github.com/demisto/content/compare/62f0bd03be73...1451bf0f3c2a
-    # if there wasn't a successful build CIRCLE_COMPARE_URL is empty. We set diff compare to special ALL
-    if [ -z "$CIRCLE_COMPARE_URL" ]; then
-        echo "CIRCLE_COMPARE_URL not set. Assuming 'rebuild'. Comparing last commit."
-        DIFF_COMPARE="HEAD^1...HEAD"
-    else
-        DIFF_COMPARE=$(echo "$CIRCLE_COMPARE_URL" | sed 's:^.*/compare/::g')    
-        if [ -z "${DIFF_COMPARE}" ]; then
-            echo "Failed: extracting diff compare from CIRCLE_COMPARE_URL: ${CIRCLE_COMPARE_URL}"
-            exit 2
-        fi
-    fi
+if [ "${CI_COMMIT_REF_NAME}" == "master" ] && [ "${UPLOAD_MODE}" = "false" ]; then
+    DIFF_COMPARE="HEAD^1...HEAD"
     DOCKER_ORG=demisto
+    if [ "${DRY_RUN}" = "true" ]; then
+        DOCKER_ORG=devdemisto
+    fi
 fi
 
-echo "DOCKER_ORG: ${DOCKER_ORG}, DIFF_COMPARE: [${DIFF_COMPARE}], SCRIPT_DIR: [${SCRIPT_DIR}], CIRCLE_BRANCH: ${CIRCLE_BRANCH}, PWD: [${CURRENT_DIR}]"
+# ============================================================================
+# STARTUP INFO -- show all configuration in a nicely formatted box
+# ============================================================================
+_py_ver=$(python --version 2>&1 || echo "python not found")
+_py3_ver=$(python3 --version 2>&1 || echo "python3 not found")
 
-# echo to bash env to be used in future steps
-CIRCLE_ARTIFACTS="artifacts"
-if [[ ! -d $CIRCLE_ARTIFACTS ]]; then
-  mkdir $CIRCLE_ARTIFACTS
+# Build upload mode info line
+_upload_info="${UPLOAD_MODE}"
+if [ "${UPLOAD_MODE}" = "true" ]; then
+    _upload_info="${UPLOAD_MODE} (comparing against: ${LAST_UPLOAD_COMMIT})"
 fi
-echo $DIFF_COMPARE > $CIRCLE_ARTIFACTS/diff_compare.txt
-echo $SCRIPT_DIR > $CIRCLE_ARTIFACTS/script_dir.txt
-echo $CURRENT_DIR > $CIRCLE_ARTIFACTS/current_dir.txt
-echo $DOCKER_INCLUDE_GREP > $CIRCLE_ARTIFACTS/docker_include_grep.txt
 
-total=$(find $SCRIPT_DIR -maxdepth 1 -mindepth 1 -type  d -print | wc -l)
-count=0
-for docker_dir in `find $SCRIPT_DIR -maxdepth 1 -mindepth 1 -type  d -print | sort`; do
-    if [[ ${DIFF_COMPARE} = "ALL" ]] || [[ $(git diff --name-status $DIFF_COMPARE -- ${docker_dir}) ]]; then
-        if [ -n "${DOCKER_INCLUDE_GREP}" ] && [ -z "$(echo ${docker_dir} | grep -E ${DOCKER_INCLUDE_GREP})" ]; then
-            [[ -z "$1" ]] && echo "Skipping dir: '${docker_dir}' as not included in grep expression DOCKER_INCLUDE_GREP: '${DOCKER_INCLUDE_GREP}'"
+print_box_banner \
+    "DOCKER BUILD -- STARTUP CONFIGURATION" \
+    "" \
+    "Date             : $(date '+%Y-%m-%d %H:%M:%S')" \
+    "Branch           : ${CI_COMMIT_REF_NAME:-N/A}" \
+    "Commit SHA       : ${CI_COMMIT_SHA:-N/A}" \
+    "Pipeline ID      : ${CI_PIPELINE_ID:-N/A}" \
+    "" \
+    "DOCKER_ORG       : ${DOCKER_ORG:-devdemisto}" \
+    "DIFF_COMPARE     : ${DIFF_COMPARE}" \
+    "DOCKER_SRC_DIR   : ${DOCKER_SRC_DIR}" \
+    "SCRIPT_DIR       : ${SCRIPT_DIR}" \
+    "PWD              : ${CURRENT_DIR}" \
+    "" \
+    "Upload Mode      : ${_upload_info}" \
+    "Save Dir         : ${SAVE_DIR:-<default: ARTIFACTS_FOLDER>}" \
+    "Dry Run          : ${DRY_RUN}" \
+    "Colors           : ${COLOR_ENABLED}" \
+    "" \
+    "Python           : ${_py_ver}" \
+    "Python3          : ${_py3_ver}"
+
+# -- pyenv info (if available) --
+if [[ $(which pyenv 2>/dev/null) ]]; then
+    print_section_header "pyenv versions"
+    pyenv versions
+    print_separator "="
+fi
+
+# -- Docker Info (collapsed in GitLab CI) --
+gitlab_section_start "docker_info" "Docker Engine Info"
+print_section_header "docker info"
+docker info
+print_separator "="
+gitlab_section_end "docker_info"
+
+ARTIFACTS_FOLDER="${ARTIFACTS_FOLDER:-artifacts}"
+if [[ ! -d "${ARTIFACTS_FOLDER}" ]]; then
+  mkdir -p "${ARTIFACTS_FOLDER}"
+fi
+
+# Persist build context to artifacts for use in subsequent CI steps
+print_section_header "Saving build context to artifacts"
+echo "$DIFF_COMPARE" > "$ARTIFACTS_FOLDER/diff_compare.txt"          # git diff range used for change detection
+echo "$SCRIPT_DIR" > "$ARTIFACTS_FOLDER/script_dir.txt"              # absolute path to the docker/ script directory
+echo "$CURRENT_DIR" > "$ARTIFACTS_FOLDER/current_dir.txt"            # working directory at script start
+echo "$DOCKER_INCLUDE_GREP" > "$ARTIFACTS_FOLDER/docker_include_grep.txt"  # grep filter for specific image (if any)
+echo "  diff_compare.txt          : ${DIFF_COMPARE}"
+echo "  script_dir.txt            : ${SCRIPT_DIR}"
+echo "  current_dir.txt           : ${CURRENT_DIR}"
+echo "  docker_include_grep.txt   : ${DOCKER_INCLUDE_GREP:-<empty>}"
+print_separator "="
+
+# ============================================================================
+# PHASE 1: DISCOVERY -- find all changed docker directories before building
+# ============================================================================
+print_section_header "DISCOVERY PHASE: Scanning for changed Docker images..."
+echo "  DIFF_COMPARE: ${DIFF_COMPARE}"
+echo ""
+
+# Count total directories for progress display
+ALL_DOCKER_DIRS=()
+while IFS= read -r d; do
+    ALL_DOCKER_DIRS+=("$d")
+done < <(find "$SCRIPT_DIR" -maxdepth 1 -mindepth 1 -type d -print | sort)
+discovery_total=${#ALL_DOCKER_DIRS[@]}
+discovery_count_width=${#discovery_total}
+
+CHANGED_DOCKER_DIRS=()
+discovery_idx=0
+for docker_dir in "${ALL_DOCKER_DIRS[@]}"; do
+    discovery_idx=$((discovery_idx + 1))
+    echo "Checking dir: ${docker_dir}" | log_prefix "discovery" "${discovery_idx}" "${discovery_total}" 15 "${discovery_count_width}"
+    if [[ ${DIFF_COMPARE} = "ALL" ]] || [[ $(git --no-pager diff "${DIFF_COMPARE}" --name-status -- "${docker_dir}") ]]; then
+        if [ -n "${DOCKER_INCLUDE_GREP}" ] && ! echo "${docker_dir}" | grep -qE "${DOCKER_INCLUDE_GREP}"; then
+            [[ -z "${docker_image_to_build}" ]] && echo "Skipping: not in DOCKER_INCLUDE_GREP" | log_prefix "discovery" "${discovery_idx}" "${discovery_total}" 15 "${discovery_count_width}"
             continue
         fi
-        count=$((count+1))
-        echo "=============== `date`: Starting docker build in dir: ${docker_dir} ($count of $total) ==============="
-        docker_build ${docker_dir}
-        cd ${CURRENT_DIR}
-        echo ">>>>>>>>>>>>>>> `date`: Done docker build <<<<<<<<<<<<<"
+        CHANGED_DOCKER_DIRS+=("${docker_dir}")
+        echo ">> Queued: $(basename "${docker_dir}")" | log_prefix "discovery" "${discovery_idx}" "${discovery_total}" 15 "${discovery_count_width}"
     fi
 done
+
+total=${#CHANGED_DOCKER_DIRS[@]}
+
+print_section_header "DISCOVERY COMPLETE: Found ${total} Docker image(s) to build (scanned ${discovery_total} directories)"
+
+if [ "${total}" -eq 0 ]; then
+    echo "No changed Docker images found. Nothing to build."
+fi
+
+# Compute the max image name length for padded/aligned log output
+max_name_len=0
+for docker_dir in "${CHANGED_DOCKER_DIRS[@]}"; do
+    _img_name=$(basename "${docker_dir}")
+    name_len=${#_img_name}
+    if [ "${name_len}" -gt "${max_name_len}" ]; then
+        max_name_len=${name_len}
+    fi
+done
+
+# Width of the count field (e.g. if total=100, count_width=3)
+count_width=${#total}
+
+# -- tqdm-style progress bar (ASCII-safe) ----------------------------------
+# param $1: current (1-based)
+# param $2: total
+# param $3: bar width (default 40)
+function progress_bar {
+    local current=$1 total=$2 width=${3:-40}
+    if [ "${total}" -eq 0 ]; then return; fi
+    local pct=$((current * 100 / total))
+    local filled=$((current * width / total))
+    local empty=$((width - filled))
+    local bar_filled=""
+    local bar_empty=""
+    for ((i = 0; i < filled; i++)); do bar_filled+="#"; done
+    for ((i = 0; i < empty; i++)); do bar_empty+="."; done
+    local elapsed=""
+    if [ -n "${BUILD_START_EPOCH}" ]; then
+        local now
+        now=$(date +%s)
+        local secs=$((now - BUILD_START_EPOCH))
+        elapsed=" elapsed $(printf '%02d:%02d:%02d' $((secs/3600)) $(( (secs%3600)/60 )) $((secs%60)))"
+    fi
+    printf "\n  %bProgress:%b |%b%s%b%b%s%b| %b%3d%% (%d/%d)%s%b\n\n" \
+        "${C_LABEL}" "${C_RESET}" \
+        "${C_BAR_FILL}" "${bar_filled}" "${C_RESET}" \
+        "${C_BAR_EMPTY}" "${bar_empty}" "${C_RESET}" \
+        "${C_VALUE}" "$pct" "$current" "$total" "$elapsed" "${C_RESET}"
+}
+
+# -- Large banner ----------------------------------------------------------
+# param $1: image name
+# param $2: current index (1-based)
+# param $3: total
+function print_build_banner {
+    local img="$1" idx="$2" tot="$3"
+    local completed=$((idx - 1))
+    print_box_banner \
+        "BUILDING IMAGE ${idx} OF ${tot}" \
+        "" \
+        "Image : ${img}" \
+        "Time  : $(date '+%Y-%m-%d %H:%M:%S')" \
+        "Done  : ${completed}/${tot} completed"
+    progress_bar "${completed}" "$tot"
+}
+
+# ============================================================================
+# PHASE 2: BUILD -- iterate over discovered images with progress tracking
+# ============================================================================
+BUILD_START_EPOCH=$(date +%s)
+count=0
+errors=()
+for docker_dir in "${CHANGED_DOCKER_DIRS[@]}"; do
+    count=$((count + 1))
+    image_name_short=$(basename "${docker_dir}")
+    section_id="docker_build_${image_name_short//[^a-zA-Z0-9_]/_}"
+
+    # -- Banner --
+    print_build_banner "${image_name_short}" "${count}" "${total}"
+
+    # -- GitLab collapsed section --
+    gitlab_section_start "${section_id}" "[${count}/${total}] Building ${image_name_short}"
+
+    # Run docker_build in the main shell (not a subshell pipe) so that
+    # variable changes (BUILT_DOCKERS, FAILED_DOCKERS, errors, etc.) are preserved.
+    # We use process substitution to stream output through log_prefix in real-time
+    # while keeping docker_build in the current shell.
+    if [ "${UPLOAD_MODE}" = "true" ]; then
+        # In upload mode, don't let a single image failure stop the entire build
+        set +e
+        docker_build "${docker_dir}" > >(log_prefix "${image_name_short}" "${count}" "${total}" "${max_name_len}" "${count_width}") 2>&1
+        build_rc=$?
+        set -e
+        # Small delay to let the background log_prefix process flush
+        wait 2>/dev/null || true
+        if [ "$build_rc" -ne 0 ]; then
+            record_failure "${image_name_short}" "build" "docker_build function returned non-zero exit code ${build_rc}"
+        fi
+    else
+        set +e
+        docker_build "${docker_dir}" > >(log_prefix "${image_name_short}" "${count}" "${total}" "${max_name_len}" "${count_width}") 2>&1
+        build_rc=$?
+        set -e
+        wait 2>/dev/null || true
+        if [ "$build_rc" -ne 0 ]; then
+            exit "$build_rc"
+        fi
+    fi
+    cd "${CURRENT_DIR}"
+
+    # -- Close GitLab section --
+    gitlab_section_end "${section_id}"
+
+    # Track succeeded images (those that didn't fail)
+    if [ "$build_rc" -eq 0 ]; then
+        SUCCEEDED_IMAGES+=("${image_name_short}")
+    fi
+
+    echo ""
+    echo "$(date '+%Y-%m-%d %H:%M:%S') Done building ${image_name_short} (${count}/${total})"
+done
+
+# Final progress
+if [ "${total}" -gt 0 ]; then
+    progress_bar "${total}" "${total}"
+fi
+
+# ============================================================================
+# BUILD SUMMARY -- show what succeeded and what failed
+# ============================================================================
+BUILD_END_EPOCH=$(date +%s)
+BUILD_DURATION=$((BUILD_END_EPOCH - BUILD_START_EPOCH))
+BUILD_DURATION_FMT=$(printf '%02d:%02d:%02d' $((BUILD_DURATION/3600)) $(( (BUILD_DURATION%3600)/60 )) $((BUILD_DURATION%60)))
+
+succeeded_count=${#SUCCEEDED_IMAGES[@]}
+failed_count=${#FAILED_DOCKERS[@]}
+
+# Determine built/artifacts status for summary
+if [ -n "$BUILT_DOCKERS" ]; then
+    _built_status="Yes"
+    echo "${BUILT_DOCKERS}" > "${ARTIFACTS_FOLDER}/built_dockers.txt"
+else
+    _built_status="No"
+fi
+if [ -n "${IMAGE_ARTIFACTS}" ]; then
+    _artifacts_status="Yes"
+    echo "${IMAGE_ARTIFACTS}" > "${ARTIFACTS_FOLDER}/image_artifacts.txt"
+else
+    _artifacts_status="None"
+fi
+
+print_box_banner \
+    "BUILD SUMMARY" \
+    "" \
+    "Total images : ${total}" \
+    "Succeeded    : ${succeeded_count}" \
+    "Failed       : ${failed_count}" \
+    "Duration     : ${BUILD_DURATION_FMT}" \
+    "Finished at  : $(date '+%Y-%m-%d %H:%M:%S')" \
+    "" \
+    "Built        : ${_built_status}" \
+    "Artifacts    : ${_artifacts_status}"
+
+# -- Succeeded images --
+if [ "${succeeded_count}" -gt 0 ]; then
+    echo ""
+    print_sub_separator "-"
+    echo "  SUCCEEDED IMAGES (${succeeded_count})"
+    print_sub_separator "-"
+    for img in "${SUCCEEDED_IMAGES[@]}"; do
+        echo -e "    ${C_GREEN}[OK]${C_RESET} ${img}"
+    done
+fi
+
+# -- Failed images with reasons --
+if [ "${failed_count}" -gt 0 ]; then
+    echo ""
+    print_sub_separator "-"
+    red_error "  FAILED IMAGES (${failed_count})"
+    print_sub_separator "-"
+    for img in "${!FAILED_DOCKERS[@]}"; do
+        echo -e "    ${C_RED}[FAIL]${C_RESET} ${img} -- step: ${FAILED_DOCKERS[$img]}"
+    done
+fi
+
+# -- Version verification errors --
+if [ ${#errors[@]} != 0 ]; then
+    echo ""
+    print_sub_separator "-"
+    red_error "  VERSION VERIFICATION ERRORS (${#errors[@]})"
+    print_sub_separator "-"
+    for err in "${errors[@]}"; do
+        red_error "    ${err}"
+    done
+fi
+
+print_separator "="
+
+# Write the failed dockers JSON report (always, even if empty)
+if [ "${UPLOAD_MODE}" = "true" ]; then
+    write_failed_dockers_report
+fi
+
+# Exit with error if there were failures in non-upload mode
+if [ ${#errors[@]} != 0 ] && [ "${UPLOAD_MODE}" != "true" ]; then
+    exit 1
+fi

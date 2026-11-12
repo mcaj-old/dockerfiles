@@ -11,6 +11,10 @@ webdriver-manager = "*"
 PyPDF2 = "*"
 pdf2image = "*"
 numpy = "*"
+PyVirtualDisplay="*"
+pycryptodome="*"
+pychrome = "*"
+psutil="*"
 
 [requires]
-python_version = "3.9"
+python_version = "3.12"
